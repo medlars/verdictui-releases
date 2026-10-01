@@ -18,6 +18,8 @@ permissions:
 jobs:
   secret-scan:
     name: Secret scan (gitleaks)
+    # gitleaks-action rejects release and workflow_dispatch events.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
