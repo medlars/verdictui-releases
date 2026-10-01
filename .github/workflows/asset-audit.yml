@@ -1,0 +1,74 @@
+name: Asset audit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to audit (default: all releases)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout (full history for scan)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e  # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-assets:
+    name: Release asset audit
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Download assets
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          tags="${TAG:-$(gh release list -R "$GITHUB_REPOSITORY" --json tagName -q '.[].tagName')}"
+          for t in $tags; do gh release download "$t" -R "$GITHUB_REPOSITORY" -D "assets/$t"; done
+          ls -R assets
+
+      - name: Checksums match their .sha256 files
+        run: |
+          set -euo pipefail
+          for sum in assets/*/*.sha256; do
+            (cd "$(dirname "$sum")" && sha256sum -c "$(basename "$sum")")
+          done
+
+      - name: No home-directory paths or secrets inside the archives
+        run: |
+          set -euo pipefail
+          curl -sSfLo gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.0/gitleaks_8.30.0_linux_x64.tar.gz
+          echo "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          mkdir -p scan
+          for z in assets/*/*.zip; do
+            d="scan/$(basename "$z" .zip)"; mkdir -p "$d"; unzip -q "$z" -d "$d"
+            find "$d" -type f -exec sh -c 'strings -a -n 6 "$1" > "$1.strings"' _ {} \;
+          done
+          hits=$(grep -rIl -E '/Users/[A-Za-z0-9._-]+' scan --include='*.strings' || true)
+          if [ -n "$hits" ]; then echo "home-directory path found in: $hits"; exit 1; fi
+          ./gitleaks dir scan --no-banner --redact
