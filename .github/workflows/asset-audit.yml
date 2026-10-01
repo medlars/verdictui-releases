@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to audit (default: all releases)
+        description: "Release tag to audit (default: all releases)"
         required: false
 
 permissions:
